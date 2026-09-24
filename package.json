@@ -1,19 +1,26 @@
 {
-  "name": "apidoc",
-  "version": "1.2.0",
-  "description": "RESTful web API Documentation Generator",
-  "author": "Peter Rottmann <rottmann@inveris.de>",
+  "name": "openapidoc",
+  "version": "2.0.1",
+  "description": "RESTful web API documentation generator with OpenAPI 3.2 output, a drop in replacement for apidoc",
+  "author": "Nicholas Heyer <nick@heyer.app>",
+  "contributors": [
+    "Nicholas Heyer <nick@heyer.app>",
+    "Peter Rottmann <rottmann@inveris.de>"
+  ],
   "license": "MIT",
   "preferGlobal": true,
-  "bin": "bin/apidoc",
+  "bin": {
+    "apidoc": "bin/apidoc",
+    "openapidoc": "bin/apidoc"
+  },
   "main": "./lib/index.js",
-  "homepage": "https://apidocjs.com",
+  "homepage": "https://github.com/nickheyer/openapidoc",
   "repository": {
     "type": "git",
-    "url": "https://github.com/apidoc/apidoc.git"
+    "url": "https://github.com/nickheyer/openapidoc.git"
   },
   "bugs": {
-    "url": "https://github.com/apidoc/apidoc/issues"
+    "url": "https://github.com/nickheyer/openapidoc/issues"
   },
   "scripts": {
     "build-example": "./bin/apidoc -v -i example/ -o /tmp/apidoc-output",
@@ -28,8 +35,11 @@
     "apidoc",
     "doc",
     "documentation",
+    "openapi",
+    "openapi3",
     "rest",
-    "restful"
+    "restful",
+    "swagger"
   ],
   "engines": {
     "node": ">=16.0.0"
@@ -46,27 +56,24 @@
     "commander": "^10.0.0",
     "diff-match-patch": "^1.0.5",
     "esbuild-loader": "^2.16.0",
-    "expose-loader": "^4.0.0",
     "fs-extra": "^11.0.0",
     "glob": "^7.2.0",
-    "handlebars": "^4.7.7",
     "iconv-lite": "^0.6.3",
-    "jquery": "^3.6.0",
     "klaw-sync": "^6.0.0",
     "lodash": "^4.17.21",
     "markdown-it": "^12.2.0",
     "nodemon": "^3.0.1",
     "prismjs": "^1.25.0",
     "semver": "^7.5.0",
-    "style-loader": "^3.3.1",
     "webpack": "^5.64.2",
-    "webpack-cli": "^4.9.1",
     "winston": "^3.3.3"
   },
   "devDependencies": {
     "@types/lodash": "^4.14.177",
     "@types/mocha": "^10.0.0",
     "@types/node": "^16.11.9",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "eslint": "^8.38.0",
     "eslint-config-recommended": "^4.1.0",
     "eslint-config-standard": "^17.0.0",

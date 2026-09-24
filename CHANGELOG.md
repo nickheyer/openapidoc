@@ -1,4 +1,39 @@
-# apiDoc Changelog
+# openapidoc Changelog
+
+### 2.0.1
+
+openapidoc is a maintained fork of apidoc. The CLI, its options, the input syntax and the
+output layout are unchanged, so it is a drop in replacement.
+
+#### OpenAPI output
+
+* The parsed documentation is converted to OpenAPI 3.2 and written to `assets/openapi.json`,
+  with one `assets/openapi.<version>.json` per documented version when there is more than one
+* The HTML output is rendered from that OpenAPI document instead of Handlebars templates
+* `createDoc()` returns an additional `openapi` object next to `data` and `project`
+* Every emitted document is validated against the official OpenAPI 3.2 JSON Schema in the test suite
+
+#### Template
+
+* The generated page is a plain JavaScript renderer, no more templating engine or jQuery
+* Response tables are ordered by status code class, wildcard groups such as `Error 4xx` come
+  before numeric codes of the same class
+* URLs are shown with OpenAPI path templates, `/user/{id}` instead of `/user/:id`
+* Response examples that are valid JSON are reformatted with four space indentation
+* Identical blocks (same group, name and version) are reported once and rendered once
+* The non functional content type selector of the legacy parameter form was removed
+* Single file output (`-S`) embeds the icon font, it no longer references missing font files
+
+#### Dependencies
+
+* Removed handlebars, jquery, expose-loader, style-loader and webpack-cli
+* No new runtime dependencies, the Node floor stays at 16
+
+#### Compatibility notes
+
+* Custom templates passed with `-t` keep the same directory layout. The bundle still receives
+  `API_DATA` and `API_PROJECT` at build time, but jquery and handlebars are no longer installed
+  by this package, a custom template that imports them has to depend on them itself
 
 ### 1.2.0
 

@@ -1,13 +1,12 @@
-# Dockerfile for apidoc
-FROM node:16-alpine
+# Dockerfile for openapidoc
+FROM node:24-alpine
 
-LABEL org.label-schema.name="apidoc" \
-    org.label-schema.description="apidoc Docker image" \
-    org.label-schema.url="http://apidocjs.com/" \
-    org.label-schema.vcs-url="https://github.com/apidoc/apidoc" \
-    org.label-schema.maintainer="rottmann@inveris.de" \
+LABEL org.label-schema.name="openapidoc" \
+    org.label-schema.description="openapidoc Docker image" \
+    org.label-schema.url="https://github.com/nickheyer/openapidoc" \
+    org.label-schema.vcs-url="https://github.com/nickheyer/openapidoc" \
     org.label-schema.schema-version="1.0" \
-    org.label-schema.docker.cmd="docker run --rm -v $(pwd):/home/node/apidoc apidoc/apidoc -o outputdir -i inputdir"
+    org.label-schema.docker.cmd="docker run --rm -v $(pwd):/home/node/apidoc openapidoc -o outputdir -i inputdir"
 
 ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
 
@@ -19,6 +18,6 @@ RUN mkdir -p /home/node/apidoc
 
 WORKDIR /home/node/apidoc
 
-RUN npm install --only=prod -g apidoc
+RUN npm install --omit=dev -g openapidoc
 
 ENTRYPOINT ["apidoc"]

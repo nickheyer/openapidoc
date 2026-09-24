@@ -1,18 +1,6 @@
-/** apidoc template main.js */
+/** openapidoc template main.js */
 
-// with webpack 5 we can use css-loader
-// import './src/css/style.css';
-
-import $ from 'jquery';
-import { groupBy, extend, some } from 'lodash';
 import semver from 'semver';
-import Handlebars from 'handlebars';
-// bootstrap plugins
-import 'bootstrap/js/dropdown';
-import 'bootstrap/js/tooltip';
-import 'bootstrap/js/popover';
-import 'bootstrap/js/scrollspy';
-import 'bootstrap/js/tab';
 
 // Prism is the syntax highlighting lib
 import Prism from 'prismjs';
@@ -28,9 +16,11 @@ import 'prismjs/plugins/diff-highlight/prism-diff-highlight';
 
 import { initSampleRequest } from './send_sample_request.js';
 import { __, setLanguage } from './locales/locale.mjs';
-
-// helpers for HandleBars
-import { register } from './hb_helpers';
+import { buildModel } from './model.mjs';
+import { qs, qsa, on, nodesFrom } from './dom.mjs';
+import { initDropdowns, initTabs, initPopovers, initOffcanvas, showFirstTabs, createScrollSpy } from './ui.mjs';
+import * as render from './render.mjs';
+import { renderCompareArticle } from './compare.mjs';
 
 document.addEventListener('DOMContentLoaded', () => {
   init();
@@ -38,193 +28,107 @@ document.addEventListener('DOMContentLoaded', () => {
   Prism.highlightAll();
 });
 
+function readJson (id) {
+  const element = document.getElementById(id);
+  if (!element) { return null; }
+  try {
+    return JSON.parse(element.textContent);
+  } catch (e) {
+    return null;
+  }
+}
+
+function append (target, markup) {
+  target.appendChild(nodesFrom(markup));
+}
+
 function init () {
-  // the data is injected at compile time by webpack
-  let api = API_DATA; // eslint-disable-line no-undef
-  const apiProject = API_PROJECT; // eslint-disable-line no-undef
+  // the OpenAPI document and the project settings are inlined by the writer
+  const spec = readJson('openapidoc-spec') || { openapi: '3.2.0', info: { title: 'API', version: '0.0.0' }, paths: {} };
+  const history = readJson('openapidoc-history') || [];
+  const apiProject = readJson('openapidoc-config') || {};
 
-  // HANDLEBARS //
-  // register HandleBars helper functions
-  register();
-
-  // Compile templates
-  const templateHeader = Handlebars.compile($('#template-header').html());
-  const templateFooter = Handlebars.compile($('#template-footer').html());
-  const templateArticle = Handlebars.compile($('#template-article').html());
-  const templateCompareArticle = Handlebars.compile($('#template-compare-article').html());
-  const templateGenerator = Handlebars.compile($('#template-generator').html());
-  const templateProject = Handlebars.compile($('#template-project').html());
-  const templateSections = Handlebars.compile($('#template-sections').html());
-  const templateSidenav = Handlebars.compile($('#template-sidenav').html());
-
-  // apiProject defaults
   const defaultTemplateOptions = {
     aloneDisplay: false,
     showRequiredLabels: false,
     withGenerator: true,
     withCompare: true,
   };
-
-  apiProject.template = Object.assign(defaultTemplateOptions, apiProject.template ?? {});
+  apiProject.template = Object.assign(defaultTemplateOptions, apiProject.template || {});
 
   if (apiProject.template.forceLanguage) { setLanguage(apiProject.template.forceLanguage); }
 
-  //
-  // Data transform
-  //
-  // grouped by group
-  const apiByGroup = groupBy(api, entry => {
-    return entry.group;
-  });
+  const info = spec.info || {};
+  if (!apiProject.name) { apiProject.name = info.title; }
+  if (!apiProject.version && info.version) { apiProject.version = info.version; }
+  if (!apiProject.description && info.summary) { apiProject.description = info.summary; }
+  if (!apiProject.header && info.description) {
+    apiProject.header = { title: spec['x-apidoc-header'] ? spec['x-apidoc-header'].title : undefined, content: info.description };
+  }
+  if (!apiProject.footer && spec['x-apidoc-footer']) { apiProject.footer = spec['x-apidoc-footer']; }
 
-  // grouped by group and name
-  const apiByGroupAndName = {};
-  $.each(apiByGroup, (index, entries) => {
-    apiByGroupAndName[index] = groupBy(entries, entry => {
-      return entry.name;
-    });
-  });
-
-  //
-  // sort api within a group by title ASC and custom order
-  //
-  const newList = [];
-  // const umlauts = { ä: 'ae', ü: 'ue', ö: 'oe', ß: 'ss' }; // TODO: remove in version 1.0
-  $.each(apiByGroupAndName, (index, groupEntries) => {
-    // get titles from the first entry of group[].name[] (name has versioning)
-    let titles = [];
-    $.each(groupEntries, (titleName, entries) => {
-      const title = entries[0].title;
-      if (title) {
-        // title.toLowerCase().replace(/[äöüß]/g, function ($0) { return umlauts[$0]; });
-        titles.push(title.toLowerCase() + '#~#' + titleName); // '#~#' keep reference to titleName after sorting
-      }
-    });
-    // sort by name ASC
-    titles.sort();
-
-    // custom order
-    if (apiProject.order) { titles = sortByOrder(titles, apiProject.order, '#~#'); }
-
-    // add single elements to the new list
-    titles.forEach(name => {
-      const values = name.split('#~#');
-      const key = values[1];
-      groupEntries[key].forEach(entry => {
-        newList.push(entry);
-      });
-    });
-  });
-
-  // api overwrite with ordered list
-  api = newList;
-
-  //
-  // Group- and Versionlists
-  //
-  let apiGroups = {};
+  const model = buildModel(spec, history, apiProject);
+  const api = model.entries;
+  const apiByGroupAndName = model.byGroupAndName;
+  const apiGroups = model.groups.map(group => group.name);
   const apiGroupTitles = {};
-  let apiVersions = {};
-  apiVersions[apiProject.version] = 1;
-
-  $.each(api, (index, entry) => {
-    apiGroups[entry.group] = 1;
-    apiGroupTitles[entry.group] = entry.groupTitle || entry.group;
-    apiVersions[entry.version] = 1;
+  const apiGroupDescriptions = {};
+  model.groups.forEach(group => {
+    apiGroupTitles[group.name] = group.title;
+    apiGroupDescriptions[group.name] = group.description;
   });
+  const apiVersions = model.versions;
 
-  // sort groups
-  apiGroups = Object.keys(apiGroups);
-  apiGroups.sort();
-
-  // custom order
-  if (apiProject.order) { apiGroups = sortGroupsByOrder(apiGroupTitles, apiProject.order); }
-
-  // sort versions DESC
-  apiVersions = Object.keys(apiVersions);
-  apiVersions.sort(semver.compare);
-  apiVersions.reverse();
+  initDropdowns();
+  initTabs();
+  initPopovers();
+  initOffcanvas();
 
   //
   // create Navigationlist
   //
   const nav = [];
   apiGroups.forEach(group => {
-    // Mainmenu entry
-    nav.push({
-      group: group,
-      isHeader: true,
-      title: apiGroupTitles[group],
-    });
-
-    // Submenu
+    nav.push({ group: group, isHeader: true, title: apiGroupTitles[group] });
     let oldName = '';
     api.forEach(entry => {
       if (entry.group === group) {
-        if (oldName !== entry.name) {
-          nav.push({
-            title: entry.title,
-            group: group,
-            name: entry.name,
-            type: entry.type,
-            version: entry.version,
-            url: entry.url,
-          });
-        } else {
-          nav.push({
-            title: entry.title,
-            group: group,
-            hidden: true,
-            name: entry.name,
-            type: entry.type,
-            version: entry.version,
-            url: entry.url,
-          });
-        }
+        nav.push({
+          title: entry.title,
+          group: group,
+          hidden: oldName === entry.name,
+          name: entry.name,
+          type: entry.type,
+          version: entry.version,
+          url: entry.path,
+        });
         oldName = entry.name;
       }
     });
   });
 
   /**
-     * Add navigation items by analyzing the HTML content and searching for h1 and h2 tags
-     * @param nav Object the navigation array
-     * @param content string the compiled HTML content
-     * @param index where to insert items
-     * @return boolean true if any good-looking (i.e. with a group identifier) <h1> tag was found
-     */
+   * Add navigation items by analyzing the HTML content and searching for h1 and h2 tags
+   * @return boolean true if any good-looking (i.e. with a group identifier) <h1> tag was found
+   */
   function addNav (nav, content, index) {
     let foundLevel1 = false;
-    if (!content) {
-      return foundLevel1;
-    }
+    if (!content) { return foundLevel1; }
     const topics = content.match(/<h(1|2).*?>(.+?)<\/h(1|2)>/gi);
     if (topics) {
-      topics.forEach(function (entry) {
+      topics.forEach(entry => {
         const level = entry.substring(2, 3);
-        const title = entry.replace(/<.+?>/g, ''); // Remove all HTML tags for the title
-        const entryTags = entry.match(/id="api-([^-]+)(?:-(.+))?"/); // Find the group and name in the id property
+        const title = entry.replace(/<.+?>/g, '');
+        const entryTags = entry.match(/id="api-([^-]+)(?:-(.+))?"/);
         const group = entryTags ? entryTags[1] : null;
         const name = entryTags ? entryTags[2] : null;
         if (level === '1' && title && group) {
-          nav.splice(index, 0, {
-            group: group,
-            isHeader: true,
-            title: title,
-            isFixed: true,
-          });
+          nav.splice(index, 0, { group: group, isHeader: true, title: title, isFixed: true });
           index++;
           foundLevel1 = true;
         }
         if (level === '2' && title && group && name) {
-          nav.splice(index, 0, {
-            group: group,
-            name: name,
-            isHeader: false,
-            title: title,
-            isFixed: false,
-            version: '1.0',
-          });
+          nav.splice(index, 0, { group: group, name: name, isHeader: false, title: title, isFixed: false, version: '1.0' });
           index++;
         }
       });
@@ -232,61 +136,39 @@ function init () {
     return foundLevel1;
   }
 
-  let foundLevel1;
-  // Mainmenu Header entry
   if (apiProject.header) {
-    foundLevel1 = addNav(nav, apiProject.header.content, 0); // Add level 1 and 2 titles
-    if (!foundLevel1) { // If no Level 1 tags were found, make a title
-      nav.unshift({
-        group: '_header',
-        isHeader: true,
-        title: apiProject.header.title == null ? __('General') : apiProject.header.title,
-        isFixed: true,
-      });
+    const foundLevel1 = addNav(nav, apiProject.header.content, 0);
+    if (!foundLevel1) {
+      nav.unshift({ group: '_header', isHeader: true, title: apiProject.header.title == null ? __('General') : apiProject.header.title, isFixed: true });
     }
   }
 
-  // Mainmenu Footer entry
   if (apiProject.footer) {
     const lastNavIndex = nav.length;
-    foundLevel1 = addNav(nav, apiProject.footer.content, nav.length); // Add level 1 and 2 titles
-    if (!foundLevel1 && apiProject.footer.title != null) { // If no Level 1 tags were found, make a title
-      nav.splice(lastNavIndex, 0, {
-        group: '_footer',
-        isHeader: true,
-        title: apiProject.footer.title,
-        isFixed: true,
-      });
+    const foundLevel1 = addNav(nav, apiProject.footer.content, nav.length);
+    if (!foundLevel1 && apiProject.footer.title != null) {
+      nav.splice(lastNavIndex, 0, { group: '_footer', isHeader: true, title: apiProject.footer.title, isFixed: true });
     }
   }
 
   // render pagetitle
-  const title = apiProject.title ? apiProject.title : 'apiDoc: ' + apiProject.name + ' - ' + apiProject.version;
-  $(document).attr('title', title);
+  document.title = apiProject.title ? apiProject.title : 'apiDoc: ' + apiProject.name + ' - ' + apiProject.version;
 
   // remove loader
-  $('#loader').remove();
+  const loader = qs('#loader');
+  if (loader) { loader.remove(); }
 
-  // render sidenav
-  const fields = {
-    nav: nav,
-  };
-  $('#sidenav').append(templateSidenav(fields));
+  append(qs('#sidenav'), render.renderSidenav(nav));
+  append(qs('#generator'), render.renderGenerator(apiProject));
+  apiProject.versions = apiVersions;
+  append(qs('#project'), render.renderProject(apiProject));
 
-  // render Generator
-  $('#generator').append(templateGenerator(apiProject));
-
-  // render Project
-  extend(apiProject, { versions: apiVersions });
-  $('#project').append(templateProject(apiProject));
-
-  // render apiDoc, header/footer documentation
-  if (apiProject.header) { $('#header').append(templateHeader(apiProject.header)); }
-
+  if (apiProject.header) { append(qs('#header'), render.renderHeader(apiProject.header)); }
   if (apiProject.footer) {
-    $('#footer').append(templateFooter(apiProject.footer));
+    append(qs('#footer'), render.renderFooter(apiProject.footer));
     if (apiProject.template.aloneDisplay) {
-      document.getElementById('api-_footer').classList.add('hide');
+      const footer = document.getElementById('api-_footer');
+      if (footer) { footer.classList.add('hide'); }
     }
   }
 
@@ -295,345 +177,234 @@ function init () {
   //
   const articleVersions = {};
   let content = '';
-  apiGroups.forEach(function (groupEntry) {
+  apiGroups.forEach(groupEntry => {
     const articles = [];
     let oldName = '';
-    let fields = {};
-    let title = groupEntry;
-    let description = '';
     articleVersions[groupEntry] = {};
 
-    // render all articles of a group
-    api.forEach(function (entry) {
-      if (groupEntry === entry.group) {
-        if (oldName !== entry.name) {
-          // determine versions
-          api.forEach(function (versionEntry) {
-            if (groupEntry === versionEntry.group && entry.name === versionEntry.name) {
-              if (!Object.prototype.hasOwnProperty.call(articleVersions[entry.group], entry.name)) {
-                articleVersions[entry.group][entry.name] = [];
-              }
-              articleVersions[entry.group][entry.name].push(versionEntry.version);
-            }
-          });
-          fields = {
-            article: entry,
-            versions: articleVersions[entry.group][entry.name],
-          };
-        } else {
-          fields = {
-            article: entry,
-            hidden: true,
-            versions: articleVersions[entry.group][entry.name],
-          };
-        }
-
-        // sampleUrl config can be an url or true
-        if (apiProject.sampleUrl) {
-          // a sampleUrl of true means we want to use the current location as sample url
-          if (apiProject.sampleUrl === true) {
-            apiProject.sampleUrl = window.location.origin;
-          }
-        }
-
-        // add prefix URL for endpoint unless it's already absolute
-        if (apiProject.url) {
-          if (fields.article.url.substr(0, 4).toLowerCase() !== 'http') {
-            fields.article.url = apiProject.url + fields.article.url;
-          }
-        }
-
-        addArticleSettings(fields, entry);
-
-        if (entry.groupTitle) { title = entry.groupTitle; }
-
-        // TODO: make groupDescription comparable with older versions (not important for the moment)
-        if (entry.groupDescription) { description = entry.groupDescription; }
-
-        articles.push({
-          article: templateArticle(fields),
-          group: entry.group,
-          name: entry.name,
-          aloneDisplay: apiProject.template.aloneDisplay,
-        });
-        oldName = entry.name;
+    api.forEach(entry => {
+      if (groupEntry !== entry.group) { return; }
+      if (!articleVersions[groupEntry][entry.name]) {
+        articleVersions[groupEntry][entry.name] = apiByGroupAndName[groupEntry][entry.name].map(item => item.version);
       }
+      const fields = {
+        article: entry,
+        hidden: oldName === entry.name,
+        versions: articleVersions[groupEntry][entry.name],
+      };
+      addArticleSettings(fields, entry);
+      articles.push({ article: render.renderArticle(fields).toString(), group: entry.group, name: entry.name });
+      oldName = entry.name;
     });
 
-    // render Section with Articles
-    fields = {
+    content += render.renderSection({
       group: groupEntry,
-      title: title,
-      description: description,
+      title: apiGroupTitles[groupEntry] || groupEntry,
+      description: apiGroupDescriptions[groupEntry] || '',
       articles: articles,
       aloneDisplay: apiProject.template.aloneDisplay,
-    };
-    content += templateSections(fields);
+    }).toString();
   });
-  $('#sections').append(content);
+  append(qs('#sections'), content);
 
-  // Bootstrap Scrollspy
+  let scrollSpy = null;
   if (!apiProject.template.aloneDisplay) {
-    document.body.dataset.spy = 'scroll';
-    $('body').scrollspy({ target: '#scrollingNav' });
+    scrollSpy = createScrollSpy(qs('#scrollingNav'), 10);
   }
 
-  // when we click on an input that was previously highlighted because it was empty, remove the red border
-  // also listen for change because for numbers you can just click the browser's up/down arrow and it will not focus
-  $('.form-control').on('focus change', function () {
-    $(this).removeClass('border-danger');
-  });
-
   // Content-Scroll on Navigation click.
-  $('.sidenav').find('a').on('click', function (e) {
-    e.preventDefault();
-    const id = this.getAttribute('href');
+  on(qs('#sidenav'), 'click', '.sidenav a', function (event, link) {
+    event.preventDefault();
+    const id = link.getAttribute('href');
     if (apiProject.template.aloneDisplay) {
-      const active = document.querySelector('.sidenav > li.active');
+      const active = qs('.sidenav > li.active');
       if (active) { active.classList.remove('active'); }
-      this.parentNode.classList.add('active');
+      link.parentNode.classList.add('active');
     } else {
-      const el = document.querySelector(id);
-      if (el) { $('html,body').animate({ scrollTop: el.offsetTop }, 400); }
+      const el = qs(id);
+      if (el) { window.scrollTo({ top: el.offsetTop, behavior: 'smooth' }); }
     }
     window.location.hash = id;
   });
 
-  /**
-     * Check if Parameter (sub) List has a type Field.
-     * Example: @apiSuccess          varname1 No type.
-     *          @apiSuccess {String} varname2 With type.
-     *
-     * @param {Object} fields
-     */
-  function _hasTypeInFields (fields) {
-    let result = false;
-    $.each(fields, name => {
-      result = result || some(fields[name], item => { return item.type; });
-    });
-    return result;
+  function hasTypeInFields (fields) {
+    return render.hasTypeInFields(fields);
   }
 
   /**
-     * On Template changes, recall plugins.
-     */
+   * On Template changes, recall plugins.
+   */
   function initDynamic () {
-    // Bootstrap popover
-    $('button[data-toggle="popover"]').popover().click(function (e) {
-      e.preventDefault();
-    });
-
-    const version = $('#version strong').html();
-    $('#sidenav li').removeClass('is-new');
+    const version = qs('#version strong').textContent;
+    qsa('#sidenav li').forEach(li => li.classList.remove('is-new'));
     if (apiProject.template.withCompare) {
-      $('#sidenav li[data-version=\'' + version + '\']').each(function () {
-        const group = $(this).data('group');
-        const name = $(this).data('name');
-        const length = $('#sidenav li[data-group=\'' + group + '\'][data-name=\'' + name + '\']').length;
-        const index = $('#sidenav li[data-group=\'' + group + '\'][data-name=\'' + name + '\']').index($(this));
-        if (length === 1 || index === length - 1) { $(this).addClass('is-new'); }
+      qsa(`#sidenav li[data-version="${version}"]`).forEach(li => {
+        const group = li.dataset.group;
+        const name = li.dataset.name;
+        const siblings = qsa(`#sidenav li[data-group="${group}"][data-name="${name}"]`);
+        const index = siblings.indexOf(li);
+        if (siblings.length === 1 || index === siblings.length - 1) { li.classList.add('is-new'); }
       });
     }
 
-    // tabs
-    $('.nav-tabs-examples a').click(function (e) {
-      e.preventDefault();
-      $(this).tab('show');
-    });
-    $('.nav-tabs-examples').find('a:first').tab('show');
+    showFirstTabs(document);
 
-    // switch content-type for body inputs (json or form-data)
-    $('.sample-request-content-type-switch').change(function () {
-      if ($(this).val() === 'body-form-data') {
-        $('#sample-request-body-json-input-' + $(this).data('id')).hide();
-        $('#sample-request-body-form-input-' + $(this).data('id')).show();
-      } else {
-        $('#sample-request-body-form-input-' + $(this).data('id')).hide();
-        $('#sample-request-body-json-input-' + $(this).data('id')).show();
-      }
-    });
-
-    if (apiProject.template.aloneDisplay) {
-      // show group
-      $('.show-group').click(function () {
-        const apiGroup = '.' + $(this).attr('data-group') + '-group';
-        const apiGroupArticle = '.' + $(this).attr('data-group') + '-article';
-        $('.show-api-group').addClass('hide');
-        $(apiGroup).removeClass('hide');
-        $('.show-api-article').addClass('hide');
-        $(apiGroupArticle).removeClass('hide');
-      });
-
-      // show api
-      $('.show-api').click(function () {
-        const id = this.getAttribute('href').substring(1);
-        const selectedVersion = document.getElementById('version').textContent.trim();
-        const apiName = `.${this.dataset.name}-article`;
-        const apiNameVersioned = `[id="${id}-${selectedVersion}"]`;
-        const apiGroup = `.${this.dataset.group}-group`;
-
-        $('.show-api-group').addClass('hide');
-        $(apiGroup).removeClass('hide');
-        $('.show-api-article').addClass('hide');
-
-        let targetEl = $(apiName);
-        if ($(apiNameVersioned).length) {
-          targetEl = $(apiNameVersioned).parent();
-        }
-        targetEl.removeClass('hide');
-
-        if (id.match(/_(header|footer)/)) {
-          document.getElementById(id).classList.remove('hide');
-        }
-      });
-    }
-
-    // call scrollspy refresh method
-    if (!apiProject.template.aloneDisplay) {
-      $('body').scrollspy('refresh');
-    }
+    if (scrollSpy) { scrollSpy.refresh(); }
 
     if (apiProject.template.aloneDisplay) {
       const hashVal = decodeURI(window.location.hash);
       if (hashVal != null && hashVal.length !== 0) {
-        const version = document.getElementById('version').textContent.trim();
-        const el = document.querySelector(`li .${hashVal.slice(1)}-init`);
-        const elVersioned = document.querySelector(`li[data-version="${version}"] .show-api.${hashVal.slice(1)}-init`);
-        let targetEl = el;
-        if (elVersioned) {
-          targetEl = elVersioned;
-        }
-        targetEl.click();
+        const selected = qs('#version').textContent.trim();
+        const el = qs(`li .${hashVal.slice(1)}-init`);
+        const elVersioned = qs(`li[data-version="${selected}"] .show-api.${hashVal.slice(1)}-init`);
+        const targetEl = elVersioned || el;
+        if (targetEl) { targetEl.click(); }
       }
     }
   }
 
-  //
-  // HTML-Template specific jQuery-Functions
+  // switch content-type for body inputs (json or form-data)
+  on(document, 'change', '.sample-request-content-type-switch', (event, select) => {
+    const jsonInput = document.getElementById('sample-request-body-json-input-' + select.dataset.id);
+    const formInput = document.getElementById('sample-request-body-form-input-' + select.dataset.id);
+    const useForm = select.value === 'body-form-data';
+    if (jsonInput) { jsonInput.hidden = useForm; }
+    if (formInput) { formInput.hidden = !useForm; }
+  });
+
+  if (apiProject.template.aloneDisplay) {
+    on(document, 'click', '.show-group', (event, link) => {
+      const group = link.getAttribute('data-group').replace(/^show-api-/, '');
+      qsa('.show-api-group').forEach(el => el.classList.add('hide'));
+      qsa(`.show-api-${group}-group`).forEach(el => el.classList.remove('hide'));
+      qsa('.show-api-article').forEach(el => el.classList.add('hide'));
+      qsa(`.show-api-${group}-article`).forEach(el => el.classList.remove('hide'));
+    });
+
+    on(document, 'click', '.show-api', (event, link) => {
+      const id = link.getAttribute('href').substring(1);
+      const selectedVersion = qs('#version').textContent.trim();
+      const apiName = `.${link.dataset.name}-article`;
+      const apiNameVersioned = `[id="${id}-${selectedVersion}"]`;
+      const apiGroup = `.${link.dataset.group}-group`;
+
+      qsa('.show-api-group').forEach(el => el.classList.add('hide'));
+      qsa(apiGroup).forEach(el => el.classList.remove('hide'));
+      qsa('.show-api-article').forEach(el => el.classList.add('hide'));
+
+      let targetEl = qsa(apiName);
+      const versioned = qs(apiNameVersioned);
+      if (versioned) { targetEl = [versioned.parentNode]; }
+      targetEl.forEach(el => el.classList.remove('hide'));
+
+      if (id.match(/_(header|footer)/)) {
+        const el = document.getElementById(id);
+        if (el) { el.classList.remove('hide'); }
+      }
+    });
+  }
+
   //
   // Change Main Version
+  //
   function setMainVersion (selectedVersion) {
     if (typeof selectedVersion === 'undefined') {
-      selectedVersion = $('#version strong').html();
+      selectedVersion = qs('#version strong').textContent;
     } else {
-      $('#version strong').html(selectedVersion);
+      qs('#version strong').textContent = selectedVersion;
     }
 
     // hide all
-    $('article').addClass('hide');
-    $('#sidenav li:not(.nav-fixed)').addClass('hide');
+    qsa('article').forEach(el => el.classList.add('hide'));
+    qsa('#sidenav li:not(.nav-fixed)').forEach(el => el.classList.add('hide'));
 
     // show 1st equal or lower Version of each entry
     const shown = {};
-    document.querySelectorAll('article[data-version]').forEach(el => {
+    qsa('article[data-version]').forEach(el => {
       const group = el.dataset.group;
       const name = el.dataset.name;
       const version = el.dataset.version;
       const id = group + name;
 
-      if (!shown[id] && semver.lte(version, selectedVersion)) {
+      if (!shown[id] && versionLte(version, selectedVersion)) {
         shown[id] = true;
-        // enable Article
-        document.querySelector(`article[data-group="${group}"][data-name="${name}"][data-version="${version}"]`).classList.remove('hide');
-        // enable Navigation
-        document.querySelector(`#sidenav li[data-group="${group}"][data-name="${name}"][data-version="${version}"]`).classList.remove('hide');
-        document.querySelector(`#sidenav li.nav-header[data-group="${group}"]`).classList.remove('hide');
+        el.classList.remove('hide');
+        const navItem = qs(`#sidenav li[data-group="${group}"][data-name="${name}"][data-version="${version}"]`);
+        if (navItem) { navItem.classList.remove('hide'); }
+        const navHeader = qs(`#sidenav li.nav-header[data-group="${group}"]`);
+        if (navHeader) { navHeader.classList.remove('hide'); }
       }
     });
 
-    // show 1st equal or lower Version of each entry
-    $('article[data-version]').each(function (index) {
-      const group = $(this).data('group');
-      $('section#api-' + group).removeClass('hide');
-      if ($('section#api-' + group + ' article:visible').length === 0) {
-        $('section#api-' + group).addClass('hide');
-      } else {
-        $('section#api-' + group).removeClass('hide');
-      }
+    // hide groups without any visible article
+    apiGroups.forEach(group => {
+      const section = document.getElementById('api-' + group);
+      if (!section) { return; }
+      section.classList.remove('hide');
+      const visible = qsa('article', section).some(el => el.offsetParent !== null);
+      if (!visible) { section.classList.add('hide'); }
     });
   }
+
+  function versionLte (a, b) {
+    if (semver.valid(a) && semver.valid(b)) { return semver.lte(a, b); }
+    return a <= b;
+  }
+
   setMainVersion();
 
-  $('#versions li.version a').on('click', function (e) {
-    e.preventDefault();
-
-    setMainVersion($(this).html());
+  on(qs('#project'), 'click', '#versions li.version a', function (event, link) {
+    event.preventDefault();
+    setMainVersion(link.textContent);
+    initDynamic();
   });
 
   // compare all article with their predecessor
-  $('#compareAllWithPredecessor').on('click', changeAllVersionCompareTo);
+  on(qs('#project'), 'click', '#compareAllWithPredecessor', changeAllVersionCompareTo);
 
   // change version of an article
-  $('article .versions li.version a').on('click', changeVersionCompareTo);
+  on(qs('#sections'), 'click', 'article .versions li.version a', changeVersionCompareTo);
 
   // compare url-parameter
-  $.urlParam = function (name) {
-    const results = new RegExp('[\\?&amp;]' + name + '=([^&amp;#]*)').exec(window.location.href);
+  function urlParam (name) {
+    const results = new RegExp('[\\?&]' + name + '=([^&#]*)').exec(window.location.href);
     return results && results[1] ? results[1] : null;
-  };
-
-  if ($.urlParam('compare')) {
-    // URL Parameter ?compare=1 is set
-    $('#compareAllWithPredecessor').trigger('click');
   }
 
-  // Quick jump on page load to hash position.
-  // Should happen after setting the main version
-  // and after triggering the click on the compare button,
-  // as these actions modify the content
-  // and would make it jump to the wrong position or not jump at all.
+  if (urlParam('compare')) {
+    changeAllVersionCompareTo(new Event('click'));
+  }
+
+  // Quick jump on page load to hash position, after version and compare are settled
   if (window.location.hash) {
     const id = decodeURI(window.location.hash);
-    if ($(id).length > 0) { $('html,body').animate({ scrollTop: parseInt($(id).offset().top) }, 0); }
+    const target = id.length > 1 ? qs(id) : null;
+    if (target) { window.scrollTo(0, target.getBoundingClientRect().top + window.pageYOffset); }
   }
-
-  /**
-   * Off-Canvas side toggle navigation
-   */
-  document.querySelector('[data-toggle="offcanvas"]').addEventListener('click', function () {
-    const row = document.querySelector('.row-offcanvas');
-    if (row) {
-      row.classList.toggle('active');
-    }
-  });
 
   /**
    * Set initial focus to search input
    */
-  $('#scrollingNav .sidenav-search input.search').focus();
+  const searchInput = qs('#scrollingNav .sidenav-search input.search');
+  if (searchInput) { searchInput.focus(); }
 
   /**
    * Filter search with a delay to prevent issues with very large projects hogging the browser event loop during the search
    */
-  $('[data-action="filter-search"]').on('keyup', resetableTimeout(event => {
-    const query = event.currentTarget.value.toLowerCase();
-
-    $('.sidenav a.nav-list-item').filter((index, el) => {
-      return $(el).toggle($(el).text().toLowerCase().indexOf(query) > -1);
+  on(qs('#sidenav'), 'keyup', '[data-action="filter-search"]', resetableTimeout(event => {
+    const query = event.currentTarget ? event.currentTarget.value.toLowerCase() : qs('[data-action="filter-search"]').value.toLowerCase();
+    qsa('.sidenav a.nav-list-item').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().indexOf(query) > -1 ? '' : 'none';
     });
   }, 200));
 
-  /**
-   * Search reset
-   */
-  $('span.search-reset').on('click', function () {
-    $('#scrollingNav .sidenav-search input.search')
-      .val('')
-      .focus()
-    ;
-    $('.sidenav').find('a.nav-list-item').show();
+  on(qs('#sidenav'), 'click', 'span.search-reset', () => {
+    const input = qs('#scrollingNav .sidenav-search input.search');
+    input.value = '';
+    input.focus();
+    qsa('.sidenav a.nav-list-item').forEach(el => { el.style.display = ''; });
   });
 
-  /**
-   * Executing the callback after the specified delay.
-   * Resets the timer if called again before the delay is reached.
-   *
-   * Behavior to prevent too many events from being triggered and getting stuck.
-   *
-   * @param {*} callback function to call after delay expires.
-   * @param {*} delay the time, in milliseconds that the timer should wait before the specified function or code is executed.
-   * @returns Timeout function includes the callback
-   */
   function resetableTimeout (callback, delay) {
     let timer = null;
     return (...args) => {
@@ -642,87 +413,55 @@ function init () {
     };
   }
 
+  function findEntry (group, name, version) {
+    return apiByGroupAndName[group][name].filter(entry => entry.version === version)[0];
+  }
+
   /**
-     * Change version of an article to compare it to an other version.
-     */
-  function changeVersionCompareTo (e) {
-    e.preventDefault();
+   * Change version of an article to compare it to an other version.
+   */
+  function changeVersionCompareTo (event, link) {
+    event.preventDefault();
 
-    const $root = $(this).parents('article');
-    const selectedVersion = $(this).html();
-    const $button = $root.find('.version');
-    const currentVersion = $button.find('strong').html();
-    $button.find('strong').html(selectedVersion);
+    const root = link.closest('article');
+    const selectedVersion = link.textContent;
+    const button = qs('.version', root);
+    const currentVersion = qs('strong', button).textContent;
+    qs('strong', button).textContent = selectedVersion;
 
-    const group = $root.data('group');
-    const name = $root.data('name');
-    const version = $root.data('version');
-
-    const compareVersion = $root.data('compare-version');
+    const group = root.dataset.group;
+    const name = root.dataset.name;
+    const version = root.dataset.version;
+    const compareVersion = root.dataset.compareVersion;
 
     if (compareVersion === selectedVersion) { return; }
-
     if (!compareVersion && version === selectedVersion) { return; }
 
-    if ((compareVersion && (articleVersions[group][name][0] === selectedVersion)) || version === selectedVersion) { // eslint-disable-line no-extra-parens
-      // the version of the entry is set to the highest version (reset)
+    if ((compareVersion && articleVersions[group][name][0] === selectedVersion) || version === selectedVersion) { // eslint-disable-line no-extra-parens
       resetArticle(group, name, version);
     } else {
-      let sourceEntry = {};
-      let compareEntry = {};
-      $.each(apiByGroupAndName[group][name], function (index, entry) {
-        if (entry.version === version) { sourceEntry = entry; }
-        if (entry.version === selectedVersion) { compareEntry = entry; }
-      });
+      const sourceEntry = findEntry(group, name, version) || {};
+      const compareEntry = findEntry(group, name, selectedVersion) || {};
 
       const fields = {
         article: sourceEntry,
         compare: compareEntry,
         versions: articleVersions[group][name],
       };
+      fields.id = (sourceEntry.group + '-' + sourceEntry.name + '-' + sourceEntry.version).replace(/\./g, '_');
 
-      // add unique id
-      // TODO: replace all group-name-version in template with id.
-      fields.article.id = fields.article.group + '-' + fields.article.name + '-' + fields.article.version;
-      fields.article.id = fields.article.id.replace(/\./g, '_');
+      ['header', 'parameter', 'error', 'success'].forEach(section => {
+        const key = '_hasTypeIn' + section.charAt(0).toUpperCase() + section.slice(1) + 'Fields';
+        fields[key] = Boolean(sourceEntry[section] && hasTypeInFields(sourceEntry[section].fields)) ||
+          Boolean(compareEntry[section] && hasTypeInFields(compareEntry[section].fields));
+      });
 
-      fields.compare.id = fields.compare.group + '-' + fields.compare.name + '-' + fields.compare.version;
-      fields.compare.id = fields.compare.id.replace(/\./g, '_');
+      root.insertAdjacentHTML('afterend', renderCompareArticle(fields).toString());
 
-      let entry = sourceEntry;
-      if (entry.header && entry.header.fields) { fields._hasTypeInHeaderFields = _hasTypeInFields(entry.header.fields); }
+      const navItem = qs(`#sidenav li[data-group="${group}"][data-name="${name}"][data-version="${currentVersion}"]`);
+      if (navItem) { navItem.classList.add('has-modifications'); }
 
-      if (entry.parameter && entry.parameter.fields) { fields._hasTypeInParameterFields = _hasTypeInFields(entry.parameter.fields); }
-
-      if (entry.error && entry.error.fields) { fields._hasTypeInErrorFields = _hasTypeInFields(entry.error.fields); }
-
-      if (entry.success && entry.success.fields) { fields._hasTypeInSuccessFields = _hasTypeInFields(entry.success.fields); }
-
-      if (entry.info && entry.info.fields) { fields._hasTypeInInfoFields = _hasTypeInFields(entry.info.fields); }
-
-      entry = compareEntry;
-      if (fields._hasTypeInHeaderFields !== true && entry.header && entry.header.fields) { fields._hasTypeInHeaderFields = _hasTypeInFields(entry.header.fields); }
-
-      if (fields._hasTypeInParameterFields !== true && entry.parameter && entry.parameter.fields) { fields._hasTypeInParameterFields = _hasTypeInFields(entry.parameter.fields); }
-
-      if (fields._hasTypeInErrorFields !== true && entry.error && entry.error.fields) { fields._hasTypeInErrorFields = _hasTypeInFields(entry.error.fields); }
-
-      if (fields._hasTypeInSuccessFields !== true && entry.success && entry.success.fields) { fields._hasTypeInSuccessFields = _hasTypeInFields(entry.success.fields); }
-
-      if (fields._hasTypeInInfoFields !== true && entry.info && entry.info.fields) { fields._hasTypeInInfoFields = _hasTypeInFields(entry.info.fields); }
-
-      const content = templateCompareArticle(fields);
-      $root.after(content);
-      const $content = $root.next();
-
-      // Event on.click re-assign
-      $content.find('.versions li.version a').on('click', changeVersionCompareTo);
-
-      // select navigation
-      $('#sidenav li[data-group=\'' + group + '\'][data-name=\'' + name + '\'][data-version=\'' + currentVersion + '\']').addClass('has-modifications');
-
-      $root.remove();
-      // TODO: on change main version or select the highest version re-render
+      root.remove();
     }
 
     initDynamic();
@@ -730,139 +469,49 @@ function init () {
   }
 
   /**
-     * Compare all currently selected Versions with their predecessor.
-     */
-  function changeAllVersionCompareTo (e) {
-    e.preventDefault();
-    $('article:visible .versions').each(function () {
-      const $root = $(this).parents('article');
-      const currentVersion = $root.data('version');
-      let $foundElement = null;
-      $(this).find('li.version a').each(function () {
-        const selectVersion = $(this).html();
-        if (selectVersion < currentVersion && !$foundElement) { $foundElement = $(this); }
+   * Compare all currently selected Versions with their predecessor.
+   */
+  function changeAllVersionCompareTo (event) {
+    event.preventDefault();
+    qsa('article:not(.hide) .versions').forEach(list => {
+      const root = list.closest('article');
+      const currentVersion = root.dataset.version;
+      let found = null;
+      qsa('li.version a', list).forEach(link => {
+        if (link.textContent < currentVersion && !found) { found = link; }
       });
-
-      if ($foundElement) { $foundElement.trigger('click'); }
+      if (found) { found.click(); }
     });
   }
 
   /**
-     * Add article settings.
-     */
+   * Add article settings.
+   */
   function addArticleSettings (fields, entry) {
-    // add unique id
-    // TODO: replace all group-name-version in template with id.
-    fields.id = fields.article.group + '-' + fields.article.name + '-' + fields.article.version;
-    fields.id = fields.id.replace(/\./g, '_');
-
-    if (entry.header && entry.header.fields) {
-      fields._hasTypeInHeaderFields = _hasTypeInFields(entry.header.fields);
-    }
-
-    if (entry.parameter && entry.parameter.fields) {
-      fields._hasTypeInParameterFields = _hasTypeInFields(entry.parameter.fields);
-    }
-
-    if (entry.error && entry.error.fields) {
-      fields._hasTypeInErrorFields = _hasTypeInFields(entry.error.fields);
-    }
-
-    if (entry.success && entry.success.fields) {
-      fields._hasTypeInSuccessFields = _hasTypeInFields(entry.success.fields);
-    }
-
-    if (entry.info && entry.info.fields) {
-      fields._hasTypeInInfoFields = _hasTypeInFields(entry.info.fields);
-    }
-
-    // add template settings
+    fields.id = (fields.article.group + '-' + fields.article.name + '-' + fields.article.version).replace(/\./g, '_');
+    ['header', 'parameter', 'error', 'success'].forEach(section => {
+      if (entry[section] && entry[section].fields) {
+        fields['_hasTypeIn' + section.charAt(0).toUpperCase() + section.slice(1) + 'Fields'] = hasTypeInFields(entry[section].fields);
+      }
+    });
     fields.template = apiProject.template;
   }
 
   /**
-     * Render Article.
-     */
-  function renderArticle (group, name, version) {
-    let entry = {};
-    $.each(apiByGroupAndName[group][name], function (index, currentEntry) {
-      if (currentEntry.version === version) { entry = currentEntry; }
-    });
-    const fields = {
-      article: entry,
-      versions: articleVersions[group][name],
-    };
-
+   * Render original Article and remove the current visible Article.
+   */
+  function resetArticle (group, name, version) {
+    const root = qsa(`article[data-group="${group}"][data-name="${name}"]`).filter(el => !el.classList.contains('hide'))[0];
+    const entry = findEntry(group, name, version);
+    const fields = { article: entry, versions: articleVersions[group][name] };
     addArticleSettings(fields, entry);
 
-    return templateArticle(fields);
-  }
+    root.insertAdjacentHTML('afterend', render.renderArticle(fields).toString());
 
-  /**
-     * Render original Article and remove the current visible Article.
-     */
-  function resetArticle (group, name, version) {
-    const $root = $('article[data-group=\'' + group + '\'][data-name=\'' + name + '\']:visible');
-    const content = renderArticle(group, name, version);
+    const navItem = qs(`#sidenav li[data-group="${group}"][data-name="${name}"][data-version="${version}"]`);
+    if (navItem) { navItem.classList.remove('has-modifications'); }
 
-    $root.after(content);
-    const $content = $root.next();
-
-    // Event on.click needs to be reassigned (should actually work with on ... automatically)
-    $content.find('.versions li.version a').on('click', changeVersionCompareTo);
-
-    $('#sidenav li[data-group=\'' + group + '\'][data-name=\'' + name + '\'][data-version=\'' + version + '\']').removeClass('has-modifications');
-
-    $root.remove();
-  }
-
-  /**
-     * Return ordered entries by custom order and append not defined entries to the end.
-     * @param  {String[]} elements
-     * @param  {String[]} order
-     * @param  {String}   splitBy
-     * @return {String[]} Custom ordered list.
-     */
-  function sortByOrder (elements, order, splitBy) {
-    const results = [];
-    order.forEach(function (name) {
-      if (splitBy) {
-        elements.forEach(function (element) {
-          const parts = element.split(splitBy);
-          const key = parts[0]; // reference keep for sorting
-          if (key === name || parts[1] === name) { results.push(element); }
-        });
-      } else {
-        elements.forEach(function (key) {
-          if (key === name) { results.push(name); }
-        });
-      }
-    });
-    // Append all other entries that are not defined in order
-    elements.forEach(function (element) {
-      if (results.indexOf(element) === -1) { results.push(element); }
-    });
-    return results;
-  }
-
-  /**
-     * Return ordered groups by custom order and append not defined groups to the end.
-     * @param  {Object[]} elements (key: group name, value: group title)
-     * @param  {String[]} order
-     * @return {String[]} Custom ordered list.
-     */
-  function sortGroupsByOrder (groups, order) {
-    const results = [];
-    order.forEach(sortKey => {
-      Object.keys(groups).forEach(name => {
-        if (groups[name].replace(/_/g, ' ') === sortKey) { results.push(name); }
-      });
-    });
-    // Append all other entries that are not defined in order
-    Object.keys(groups).forEach(name => {
-      if (results.indexOf(name) === -1) { results.push(name); }
-    });
-    return results;
+    root.remove();
   }
 
   initDynamic();

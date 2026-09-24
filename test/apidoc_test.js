@@ -42,6 +42,8 @@ function testFullExample (config) {
     const outputFiles = [
       'assets/main.bundle.js',
       'assets/api-data.json',
+      'assets/openapi.json',
+      'assets/openapi.0.2.0.json',
       'index.html',
     ];
 
